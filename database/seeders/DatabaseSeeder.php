@@ -44,6 +44,8 @@ class DatabaseSeeder extends Seeder
         $this->call(DemoDataSeeder::class);
         $this->call(BulkDemoDataSeeder::class);
         $this->call(InsightsDemoSeeder::class);
+        // P0 admin agency align: re-assert Admin User belongs to Demo Agency (same projects as KO/demo data).
+        User::where('email', 'admin@sparkdraw.test')->update(['agency_id' => $agency->id]);
 
         $this->command->info('✓ Agency: Sparkdraw Demo Agency');
         $this->command->info('✓ Users seeded — all passwords: password');

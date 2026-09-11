@@ -72,9 +72,10 @@ class HealthScoreController extends Controller
         $amberCount = $scored->filter(fn (Project $p) => $p->latestHealthScore->flag === 'amber')->count();
         $redCount   = $scored->filter(fn (Project $p) => $p->latestHealthScore->flag === 'red')->count();
 
+        // null (not 0) when no scored projects — Overview must show "insufficient events", never a naked 0.
         $averageScore = $scored->isNotEmpty()
             ? round($scored->avg(fn (Project $p) => $p->latestHealthScore->score), 1)
-            : 0;
+            : null;
 
         $atRiskProjects = $projects
             ->filter(fn (Project $p) => $p->latestHealthScore?->flag === 'red' || $p->latestHealthScore?->flag === 'amber')

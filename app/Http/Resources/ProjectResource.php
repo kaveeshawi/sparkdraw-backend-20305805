@@ -116,7 +116,7 @@ class ProjectResource extends JsonResource
             return [
                 'total'       => $this->tasks_count ?? 0,
                 'todo'        => 0,
-                'in_progress' => 0,
+                'in_progress' => $this->in_progress_tasks_count ?? 0,
                 'in_review'   => 0,
                 'done'        => $this->done_tasks_count ?? 0,
             ];

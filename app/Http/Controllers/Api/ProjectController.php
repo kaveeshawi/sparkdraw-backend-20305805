@@ -34,6 +34,7 @@ class ProjectController extends Controller
             ->withCount([
                 'tasks',
                 'tasks as done_tasks_count' => fn($q) => $q->where('status', 'done'),
+                'tasks as in_progress_tasks_count' => fn($q) => $q->where('status', 'in_progress'),
                 'milestones',
             ])
             ->orderByDesc('created_at')

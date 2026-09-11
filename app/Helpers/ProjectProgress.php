@@ -9,6 +9,7 @@ class ProjectProgress
     /**
      * Calculate project completion as a percentage of done tasks vs total tasks.
      * Returns 0 when no tasks exist (not 100%, because nothing is actually done).
+     * UI must show "No tasks yet" when tasks_count==0 — never a fake/broken-looking 0% bar alone.
      */
     public static function calculate(Project $project): int
     {
