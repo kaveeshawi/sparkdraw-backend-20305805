@@ -71,10 +71,17 @@ jobs:
             if [ ! -f .env ]; then
               echo "No .env found — seeding from .env.example (configure DB secrets on the server)"
               cp .env.example .env
-              $PHP_BIN artisan key:generate --force
+              NEED_APP_KEY=1
+            else
+              NEED_APP_KEY=0
             fi
 
             $PHP_BIN "$(command -v composer)" install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+
+            if [ "$NEED_APP_KEY" = "1" ] || ! grep -q '^APP_KEY=base64:' .env; then
+              $PHP_BIN artisan key:generate --force
+            fi
+
             $PHP_BIN artisan migrate --force
             $PHP_BIN artisan config:cache
             $PHP_BIN artisan route:cache
