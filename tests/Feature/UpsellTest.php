@@ -31,7 +31,7 @@ class UpsellTest extends TestCase
             'admin_status' => 'pending', 'client_status' => 'hidden',
         ]);
 
-        return compact('agency', 'admin', 'pm', 'suggestion');
+        return compact('agency', 'admin', 'pm', 'suggestion', 'contact');
     }
 
     public function test_admin_can_approve_upsell_suggestion(): void
@@ -90,5 +90,54 @@ class UpsellTest extends TestCase
             'client_status' => 'hidden',
             'admin_status' => 'pending',
         ]);
+    }
+
+    public function test_client_sees_sent_upsell_on_portal(): void
+    {
+        ['agency' => $agency, 'admin' => $admin, 'suggestion' => $suggestion, 'contact' => $contact] = $this->seedUpsellData();
+        $projectId = $suggestion->project_id;
+
+        $this->actingAs($admin)->patchJson("/api/v1/upsell-suggestions/{$suggestion->id}/send")->assertOk();
+
+        $this->actingAs($contact)
+            ->getJson("/api/v1/portal/{$agency->domain_slug}/projects/{$projectId}/upsells")
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.service_type', 'SEO package')
+            ->assertJsonPath('data.0.client_status', 'shown');
+    }
+
+    public function test_client_can_accept_and_decline_upsell(): void
+    {
+        ['agency' => $agency, 'admin' => $admin, 'suggestion' => $suggestion, 'contact' => $contact] = $this->seedUpsellData();
+        $projectId = $suggestion->project_id;
+        $slug = $agency->domain_slug;
+
+        $this->actingAs($admin)->patchJson("/api/v1/upsell-suggestions/{$suggestion->id}/send")->assertOk();
+
+        $this->actingAs($contact)
+            ->patchJson("/api/v1/portal/{$slug}/projects/{$projectId}/upsells/{$suggestion->id}/accept")
+            ->assertOk()
+            ->assertJsonPath('data.client_status', 'accepted');
+
+        $this->assertDatabaseHas('project_events', [
+            'event_type' => 'upsell_accepted',
+            'project_id' => $projectId,
+        ]);
+
+        $this->actingAs($contact)
+            ->patchJson("/api/v1/portal/{$slug}/projects/{$projectId}/upsells/{$suggestion->id}/decline")
+            ->assertOk()
+            ->assertJsonPath('data.client_status', 'declined');
+    }
+
+    public function test_client_cannot_see_hidden_upsell(): void
+    {
+        ['agency' => $agency, 'suggestion' => $suggestion, 'contact' => $contact] = $this->seedUpsellData();
+
+        $this->actingAs($contact)
+            ->getJson("/api/v1/portal/{$agency->domain_slug}/projects/{$suggestion->project_id}/upsells")
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
     }
 }

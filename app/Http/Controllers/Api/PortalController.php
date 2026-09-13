@@ -13,6 +13,8 @@ use App\Models\DriveFile;
 use App\Models\DriveFolder;
 use App\Models\Invoice;
 use App\Models\Project;
+use App\Models\ProjectEvent;
+use App\Models\UpsellSuggestion;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -247,6 +249,96 @@ class PortalController extends Controller
             ->values();
 
         return $this->success($members);
+    }
+
+    // GET /api/v1/portal/{slug}/projects/{project}/upsells — offers sent to this client
+    public function upsells(Request $request, string $slug, Project $project): JsonResponse
+    {
+        [$client, $error] = $this->resolvePortalClient($request, $slug);
+        if ($error) {
+            return $error;
+        }
+
+        if ($project->client_id !== $client->id) {
+            return $this->forbidden('You do not have access to this project.');
+        }
+
+        $offers = UpsellSuggestion::query()
+            ->where('project_id', $project->id)
+            ->whereIn('client_status', ['shown', 'accepted', 'declined'])
+            ->orderByDesc('created_at')
+            ->get()
+            ->map(fn (UpsellSuggestion $s) => $this->serializePortalUpsell($s));
+
+        return $this->success($offers);
+    }
+
+    // PATCH /api/v1/portal/{slug}/projects/{project}/upsells/{upsell}/accept
+    public function acceptUpsell(Request $request, string $slug, Project $project, UpsellSuggestion $upsell): JsonResponse
+    {
+        return $this->respondToUpsell($request, $slug, $project, $upsell, 'accepted');
+    }
+
+    // PATCH /api/v1/portal/{slug}/projects/{project}/upsells/{upsell}/decline
+    public function declineUpsell(Request $request, string $slug, Project $project, UpsellSuggestion $upsell): JsonResponse
+    {
+        return $this->respondToUpsell($request, $slug, $project, $upsell, 'declined');
+    }
+
+    private function respondToUpsell(
+        Request $request,
+        string $slug,
+        Project $project,
+        UpsellSuggestion $upsell,
+        string $status
+    ): JsonResponse {
+        [$client, $error] = $this->resolvePortalClient($request, $slug);
+        if ($error) {
+            return $error;
+        }
+
+        if ($project->client_id !== $client->id) {
+            return $this->forbidden('You do not have access to this project.');
+        }
+
+        if ((int) $upsell->project_id !== (int) $project->id) {
+            return $this->notFound('Offer not found on this project.');
+        }
+
+        if (! in_array($upsell->client_status, ['shown', 'accepted', 'declined'], true)) {
+            return $this->forbidden('This offer is not available yet.');
+        }
+
+        $upsell->update(['client_status' => $status]);
+
+        ProjectEvent::log(
+            $upsell->agency_id,
+            $upsell->project_id,
+            $status === 'accepted' ? 'upsell_accepted' : 'upsell_declined',
+            [
+                'upsell_id'    => $upsell->id,
+                'service_type' => $upsell->service_type,
+                'confidence'   => $upsell->confidence,
+                'responded_by' => $request->user()->id,
+            ]
+        );
+
+        return $this->success(
+            $this->serializePortalUpsell($upsell->fresh()),
+            $status === 'accepted' ? 'Interest recorded — your agency will follow up.' : 'Offer declined.'
+        );
+    }
+
+    private function serializePortalUpsell(UpsellSuggestion $s): array
+    {
+        return [
+            'id'            => $s->id,
+            'project_id'    => $s->project_id,
+            'service_type'  => $s->service_type,
+            'confidence'    => $s->confidence,
+            'client_status' => $s->client_status,
+            'created_at'    => optional($s->created_at)?->toISOString(),
+        ];
     }
 
     // GET /api/v1/portal/{slug}/assets — client folder (named after company) + files

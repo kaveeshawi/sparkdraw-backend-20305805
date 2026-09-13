@@ -15,7 +15,7 @@ return new class extends Migration
             $table->string('service_type');
             $table->float('confidence')->default(0);
             $table->enum('admin_status', ['pending', 'approved', 'rejected'])->default('pending');
-            $table->enum('client_status', ['hidden', 'shown', 'accepted'])->default('hidden');
+            $table->enum('client_status', ['hidden', 'shown', 'accepted', 'declined'])->default('hidden');
             $table->timestamps();
         });
     }

@@ -110,6 +110,9 @@ Route::prefix('v1')->group(function () {
                 Route::get('{slug}/projects', [PortalController::class, 'projects']);
                 Route::get('{slug}/projects/{project}/progress', [PortalController::class, 'progress']);
                 Route::get('{slug}/projects/{project}/team', [PortalController::class, 'team']);
+                Route::get('{slug}/projects/{project}/upsells', [PortalController::class, 'upsells']);
+                Route::patch('{slug}/projects/{project}/upsells/{upsell}/accept', [PortalController::class, 'acceptUpsell']);
+                Route::patch('{slug}/projects/{project}/upsells/{upsell}/decline', [PortalController::class, 'declineUpsell']);
                 Route::get('{slug}/invoices', [PortalController::class, 'invoices']);
                 Route::get('{slug}/assets', [PortalController::class, 'assets']);
                 Route::post('{slug}/assets', [PortalController::class, 'uploadAsset']);
