@@ -51,6 +51,21 @@ jobs:
             PHP_BIN="$(command -v php8.4)"
             echo "Using $($PHP_BIN -v | head -1)"
 
+            ensure_composer() {
+              if command -v composer >/dev/null 2>&1; then
+                return 0
+              fi
+              echo "Composer not found — installing..."
+              curl -sS https://getcomposer.org/installer -o /tmp/composer-setup.php
+              $PHP_BIN /tmp/composer-setup.php --install-dir=/tmp --filename=composer
+              sudo mv /tmp/composer /usr/local/bin/composer
+              sudo chmod +x /usr/local/bin/composer
+              rm -f /tmp/composer-setup.php
+            }
+            ensure_composer
+            COMPOSER_BIN="$(command -v composer)"
+            echo "Using composer at $COMPOSER_BIN ($($COMPOSER_BIN --version 2>/dev/null | head -1))"
+
             sudo mkdir -p /var/www
             if [ ! -d "$APP_DIR/.git" ]; then
               sudo rm -rf "$APP_DIR"
@@ -67,22 +82,28 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             git remote set-url origin "https://github.com/${REPO_SLUG}"
+            echo "Code at $(git rev-parse --short HEAD)"
 
             if [ ! -f .env ]; then
               echo "No .env found — seeding from .env.example (configure DB secrets on the server)"
               cp .env.example .env
               NEED_APP_KEY=1
             else
+              echo ".env already present"
               NEED_APP_KEY=0
             fi
 
-            $PHP_BIN "$(command -v composer)" install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+            echo "Running composer install..."
+            $PHP_BIN "$COMPOSER_BIN" install --no-dev --prefer-dist --optimize-autoloader --no-interaction
 
             if [ "$NEED_APP_KEY" = "1" ] || ! grep -q '^APP_KEY=base64:' .env; then
+              echo "Generating APP_KEY..."
               $PHP_BIN artisan key:generate --force
             fi
 
+            echo "Running migrations..."
             $PHP_BIN artisan migrate --force
+            echo "Caching config/routes..."
             $PHP_BIN artisan config:cache
             $PHP_BIN artisan route:cache
 
@@ -96,3 +117,4 @@ jobs:
             fi
             sudo systemctl reload php8.2-fpm 2>/dev/null || true
             sudo systemctl reload php8.3-fpm 2>/dev/null || true
+            echo "Deploy finished OK"
