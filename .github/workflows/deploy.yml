@@ -20,7 +20,7 @@ jobs:
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           envs: GH_TOKEN
-          script_stop: true
+          # Do NOT use script_stop — it breaks if/else (false tests become exit 1)
           command_timeout: 30m
           script: |
             set -e
@@ -84,13 +84,13 @@ jobs:
             git remote set-url origin "https://github.com/${REPO_SLUG}"
             echo "Code at $(git rev-parse --short HEAD)"
 
+            NEED_APP_KEY=0
             if [ ! -f .env ]; then
               echo "No .env found — seeding from .env.example (configure DB secrets on the server)"
               cp .env.example .env
               NEED_APP_KEY=1
             else
               echo ".env already present"
-              NEED_APP_KEY=0
             fi
 
             echo "Running composer install..."
