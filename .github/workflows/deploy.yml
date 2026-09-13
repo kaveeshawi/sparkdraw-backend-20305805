@@ -21,6 +21,7 @@ jobs:
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           envs: GH_TOKEN
           script_stop: true
+          command_timeout: 30m
           script: |
             set -e
             APP_DIR=/var/www/sparkdraw-backend
@@ -32,20 +33,59 @@ jobs:
               exit 1
             fi
 
+            # Laravel 13 + current lockfile need PHP 8.4+
+            ensure_php84() {
+              if command -v php8.4 >/dev/null 2>&1; then
+                return 0
+              fi
+              echo "Installing PHP 8.4 (server had $(php -v | head -1 || true))"
+              sudo apt-get update -y
+              sudo apt-get install -y software-properties-common
+              sudo add-apt-repository -y ppa:ondrej/php
+              sudo apt-get update -y
+              sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                php8.4-cli php8.4-fpm php8.4-mysql php8.4-xml php8.4-mbstring \
+                php8.4-curl php8.4-zip php8.4-bcmath php8.4-tokenizer php8.4-sqlite3
+            }
+            ensure_php84
+            PHP_BIN="$(command -v php8.4)"
+            echo "Using $($PHP_BIN -v | head -1)"
+
             sudo mkdir -p /var/www
             if [ ! -d "$APP_DIR/.git" ]; then
               sudo rm -rf "$APP_DIR"
               sudo git clone "$AUTH_REPO" "$APP_DIR"
             fi
 
-            cd "$APP_DIR"
-            sudo git remote set-url origin "$AUTH_REPO"
-            sudo git fetch origin main
-            sudo git reset --hard origin/main
-            sudo git remote set-url origin "https://github.com/${REPO_SLUG}"
+            # Avoid "dubious ownership" when repo was cloned as root
+            sudo git config --system --add safe.directory "$APP_DIR" || true
+            git config --global --add safe.directory "$APP_DIR" || true
+            sudo chown -R "$USER:$USER" "$APP_DIR"
 
-            composer install --no-dev --prefer-dist --optimize-autoloader
-            php artisan migrate --force
-            php artisan config:cache
-            php artisan route:cache
-            sudo systemctl reload php8.2-fpm || sudo systemctl reload php8.3-fpm || true
+            cd "$APP_DIR"
+            git remote set-url origin "$AUTH_REPO"
+            git fetch origin main
+            git reset --hard origin/main
+            git remote set-url origin "https://github.com/${REPO_SLUG}"
+
+            if [ ! -f .env ]; then
+              echo "No .env found — seeding from .env.example (configure DB secrets on the server)"
+              cp .env.example .env
+              $PHP_BIN artisan key:generate --force
+            fi
+
+            $PHP_BIN "$(command -v composer)" install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+            $PHP_BIN artisan migrate --force
+            $PHP_BIN artisan config:cache
+            $PHP_BIN artisan route:cache
+
+            sudo chown -R www-data:www-data storage bootstrap/cache
+            sudo chmod -R ug+rwx storage bootstrap/cache
+
+            # Point nginx/php-fpm at 8.4 when available
+            if systemctl list-unit-files | grep -q php8.4-fpm; then
+              sudo systemctl enable --now php8.4-fpm
+              sudo systemctl reload php8.4-fpm
+            fi
+            sudo systemctl reload php8.2-fpm 2>/dev/null || true
+            sudo systemctl reload php8.3-fpm 2>/dev/null || true
