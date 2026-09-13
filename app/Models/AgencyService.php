@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Traits\HasAgencyScope;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class AgencyService extends Model
 {
@@ -19,5 +20,10 @@ class AgencyService extends Model
     public function agency(): BelongsTo
     {
         return $this->belongsTo(Agency::class);
+    }
+
+    public function packages(): HasMany
+    {
+        return $this->hasMany(AgencyServicePackage::class)->orderBy('name');
     }
 }

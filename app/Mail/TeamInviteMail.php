@@ -15,13 +15,14 @@ class TeamInviteMail extends Mailable
 
     public function __construct(
         public User $user,
-        public string $inviteUrl,
+        public string $loginUrl,
+        public string $temporaryPassword,
     ) {}
 
     public function envelope(): Envelope
     {
         return new Envelope(
-            subject: 'You have been invited to join the team',
+            subject: 'Your Sparkdraw team login credentials',
         );
     }
 

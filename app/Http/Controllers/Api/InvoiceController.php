@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Http\Controllers\Api\AgencyIntegrationController;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Invoice\StoreCardPaymentRequest;
 use App\Http\Resources\InvoiceResource;
@@ -10,17 +11,24 @@ use App\Models\Client;
 use App\Models\Invoice;
 use App\Models\Project;
 use App\Models\ProjectEvent;
+use App\Services\AgencyIntegrationResolver;
 use App\Services\PayPalService;
+use App\Services\StripeService;
+use App\Services\WiseService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 
 class InvoiceController extends Controller
 {
     use ApiResponse;
 
-    public function __construct(private readonly PayPalService $payPalService) {}
+    public function __construct(
+        private readonly PayPalService $payPalService,
+        private readonly StripeService $stripeService,
+        private readonly WiseService $wiseService,
+        private readonly AgencyIntegrationResolver $integrations,
+    ) {}
 
     // GET /api/v1/invoices
     public function index(Request $request): JsonResponse
@@ -58,6 +66,8 @@ class InvoiceController extends Controller
             'project_id' => ['required', 'integer', 'exists:projects,id'],
             'due_date'   => ['nullable', 'date'],
             'notes'      => ['nullable', 'string', 'max:2000'],
+            'template_id' => ['nullable', 'string', 'max:100'],
+            'template_snapshot' => ['nullable', 'array'],
             'line_items' => ['required', 'array', 'min:1'],
             'line_items.*.description' => ['required', 'string', 'max:500'],
             'line_items.*.quantity'    => ['required', 'numeric', 'min:0.01'],
@@ -92,6 +102,8 @@ class InvoiceController extends Controller
                 'status'         => 'draft',
                 'due_date'       => $validated['due_date'] ?? null,
                 'notes'          => $validated['notes'] ?? null,
+                'template_id'    => $validated['template_id'] ?? null,
+                'template_snapshot' => $validated['template_snapshot'] ?? null,
             ]);
 
             ProjectEvent::log($user->agency_id, $validated['project_id'], 'invoice_created', [
@@ -99,6 +111,7 @@ class InvoiceController extends Controller
                 'invoice_number' => $invoice->invoice_number,
                 'amount'         => $total,
                 'client_id'      => $validated['client_id'],
+                'template_id'    => $validated['template_id'] ?? null,
             ]);
 
             return $invoice;
@@ -179,7 +192,7 @@ class InvoiceController extends Controller
         return $this->success(new InvoiceResource($invoice), 'Invoice marked as sent.');
     }
 
-    // GET /api/v1/invoices/revenue — admin only
+    // GET /api/v1/invoices/revenue — admin only (Finance overview summary)
     public function revenue(Request $request): JsonResponse
     {
         $agencyId = $request->user()->agency_id;
@@ -187,6 +200,7 @@ class InvoiceController extends Controller
         $thisMonthStart = now()->startOfMonth();
         $lastMonthStart = now()->subMonth()->startOfMonth();
         $lastMonthEnd   = now()->subMonth()->endOfMonth();
+        $today = now()->startOfDay();
 
         $thisMonth = (float) Invoice::where('status', 'paid')
             ->where('paid_at', '>=', $thisMonthStart)
@@ -204,11 +218,63 @@ class InvoiceController extends Controller
             ->where('paid_at', '>=', $thisMonthStart)
             ->count();
 
+        $invoices = Invoice::where('agency_id', $agencyId)->get(['id', 'amount', 'status', 'due_date']);
+
+        $draftCount = 0;
+        $outstanding = 0.0;
+        $overdueTotal = 0.0;
+        $byStatus = [
+            'draft' => ['status' => 'draft', 'count' => 0, 'amount' => 0.0],
+            'sent' => ['status' => 'sent', 'count' => 0, 'amount' => 0.0],
+            'paid' => ['status' => 'paid', 'count' => 0, 'amount' => 0.0],
+            'overdue' => ['status' => 'overdue', 'count' => 0, 'amount' => 0.0],
+        ];
+        $aging = [
+            ['bucket' => '0-30', 'label' => '0–30 days', 'count' => 0, 'amount' => 0.0],
+            ['bucket' => '31-60', 'label' => '31–60 days', 'count' => 0, 'amount' => 0.0],
+            ['bucket' => '61-90', 'label' => '61–90 days', 'count' => 0, 'amount' => 0.0],
+            ['bucket' => '90+', 'label' => '90+ days', 'count' => 0, 'amount' => 0.0],
+        ];
+
+        foreach ($invoices as $invoice) {
+            $status = $invoice->displayStatus();
+            $amount = (float) $invoice->amount;
+
+            if (!isset($byStatus[$status])) {
+                $byStatus[$status] = ['status' => $status, 'count' => 0, 'amount' => 0.0];
+            }
+            $byStatus[$status]['count'] += 1;
+            $byStatus[$status]['amount'] = round($byStatus[$status]['amount'] + $amount, 2);
+
+            if ($status === 'draft') {
+                $draftCount += 1;
+            }
+
+            if (in_array($status, ['sent', 'overdue'], true)) {
+                $outstanding = round($outstanding + $amount, 2);
+            }
+
+            if ($status === 'overdue') {
+                $overdueTotal = round($overdueTotal + $amount, 2);
+                $due = $invoice->due_date ? $invoice->due_date->copy()->startOfDay() : null;
+                $days = $due ? $due->diffInDays($today) : 0;
+                $idx = $days <= 30 ? 0 : ($days <= 60 ? 1 : ($days <= 90 ? 2 : 3));
+                $aging[$idx]['count'] += 1;
+                $aging[$idx]['amount'] = round($aging[$idx]['amount'] + $amount, 2);
+            }
+        }
+
         return $this->success([
-            'this_month'  => round($thisMonth, 2),
-            'last_month'  => round($lastMonth, 2),
-            'change_pct'  => $changePct,
-            'paid_count'  => $paidCount,
+            'this_month'   => round($thisMonth, 2),
+            'last_month'   => round($lastMonth, 2),
+            'change_pct'   => $changePct,
+            'paid_count'   => $paidCount,
+            'collected'    => round($thisMonth, 2),
+            'outstanding'  => $outstanding,
+            'overdue_total'=> $overdueTotal,
+            'draft_count'  => $draftCount,
+            'by_status'    => array_values($byStatus),
+            'aging'        => $aging,
         ]);
     }
 
@@ -223,6 +289,10 @@ class InvoiceController extends Controller
             return $this->error('This invoice is not available for payment.', [], 422);
         }
 
+        if (!$this->payPalService->resolveCredentials($invoice->agency_id)) {
+            return $this->error('PayPal is not connected for this agency.', [], 503);
+        }
+
         $result = $this->payPalService->createOrder($invoice);
 
         if (empty($result['success'])) {
@@ -231,14 +301,17 @@ class InvoiceController extends Controller
 
         $invoice->update(['paypal_order_id' => $result['order_id']]);
 
+        $mode = $result['mode'] ?? config('paypal.mode', 'sandbox');
+
         return $this->success([
-            'order_id'      => $result['order_id'],
-            'approval_url'  => $result['approval_url'],
-            'sandbox_mode'  => config('paypal.mode') === 'sandbox',
+            'order_id'     => $result['order_id'],
+            'approval_url' => $result['approval_url'],
+            'sandbox_mode' => $mode === 'sandbox',
+            'payment_method' => 'paypal',
         ]);
     }
 
-    // POST /api/v1/invoices/{invoice}/pay-card — sandbox card checkout (no PayPal redirect)
+    // POST /api/v1/invoices/{invoice}/pay-card — Stripe card checkout
     public function processCardPayment(StoreCardPaymentRequest $request, Invoice $invoice): JsonResponse
     {
         if (!$this->canAccessInvoice($request, $invoice)) {
@@ -249,7 +322,11 @@ class InvoiceController extends Controller
             return $this->error('This invoice is not available for payment.', [], 422);
         }
 
-        $transactionId = 'SANDBOX-' . strtoupper(Str::random(12));
+        $result = $this->stripeService->chargeCard($invoice, $request->validated());
+
+        if (empty($result['success'])) {
+            return $this->error($result['message'] ?? 'Card payment failed.', [], 503);
+        }
 
         $invoice->update([
             'status'  => 'paid',
@@ -257,20 +334,60 @@ class InvoiceController extends Controller
         ]);
 
         ProjectEvent::log($invoice->agency_id, $invoice->project_id, 'invoice_paid', [
-            'amount'          => (float) $invoice->amount,
-            'transaction_id'  => $transactionId,
-            'payment_method'  => 'card_sandbox',
-            'invoice_id'      => $invoice->id,
-            'invoice_number'  => $invoice->invoice_number,
+            'amount'         => (float) $invoice->amount,
+            'transaction_id' => $result['transaction_id'],
+            'payment_method' => 'stripe',
+            'invoice_id'     => $invoice->id,
+            'invoice_number' => $invoice->invoice_number,
         ]);
 
         return $this->success([
-            'invoice_id'       => $invoice->id,
-            'invoice_number'   => $invoice->invoice_number,
-            'status'           => 'paid',
-            'transaction_id'   => $transactionId,
-            'payment_method'   => 'card',
-            'message'          => 'Payment successful.',
+            'invoice_id'     => $invoice->id,
+            'invoice_number' => $invoice->invoice_number,
+            'status'         => 'paid',
+            'transaction_id' => $result['transaction_id'],
+            'payment_method' => 'card',
+            'message'        => 'Payment successful.',
+        ]);
+    }
+
+    // POST /api/v1/invoices/{invoice}/pay-wise
+    public function processWisePayment(Request $request, Invoice $invoice): JsonResponse
+    {
+        if (!$this->canAccessInvoice($request, $invoice)) {
+            return $this->forbidden('You do not have access to this invoice.');
+        }
+
+        if (!in_array($invoice->displayStatus(), ['sent', 'overdue'], true)) {
+            return $this->error('This invoice is not available for payment.', [], 422);
+        }
+
+        $result = $this->wiseService->recordPayment($invoice);
+
+        if (empty($result['success'])) {
+            return $this->error($result['message'] ?? 'Wise payment failed.', [], 503);
+        }
+
+        $invoice->update([
+            'status'  => 'paid',
+            'paid_at' => now(),
+        ]);
+
+        ProjectEvent::log($invoice->agency_id, $invoice->project_id, 'invoice_paid', [
+            'amount'         => (float) $invoice->amount,
+            'transaction_id' => $result['transaction_id'],
+            'payment_method' => 'wise',
+            'invoice_id'     => $invoice->id,
+            'invoice_number' => $invoice->invoice_number,
+        ]);
+
+        return $this->success([
+            'invoice_id'     => $invoice->id,
+            'invoice_number' => $invoice->invoice_number,
+            'status'         => 'paid',
+            'transaction_id' => $result['transaction_id'],
+            'payment_method' => 'wise',
+            'message'        => $result['message'] ?? 'Payment successful.',
         ]);
     }
 
@@ -283,7 +400,7 @@ class InvoiceController extends Controller
             return $this->error('Missing PayPal order token.', [], 422);
         }
 
-        $result = $this->payPalService->captureOrder($orderId);
+        $result = $this->payPalService->captureOrder($orderId, $invoice->agency_id);
 
         if (empty($result['success']) || ($result['status'] ?? '') !== 'COMPLETED') {
             return $this->error($result['message'] ?? 'Payment capture failed.', [], 422);
@@ -298,6 +415,7 @@ class InvoiceController extends Controller
             'amount'          => (float) $invoice->amount,
             'transaction_id'  => $result['transaction_id'],
             'paypal_order_id' => $orderId,
+            'payment_method'  => 'paypal',
             'invoice_id'      => $invoice->id,
             'invoice_number'  => $invoice->invoice_number,
         ]);
@@ -309,6 +427,24 @@ class InvoiceController extends Controller
             'transaction_id' => $result['transaction_id'],
             'message'        => 'Payment successful.',
         ]);
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function availablePaymentMethods(int $agencyId): array
+    {
+        $connected = $this->integrations->connectedProviders(
+            $agencyId,
+            AgencyIntegrationController::PAYMENT_PROVIDERS
+        );
+
+        // Env-level PayPal still counts when no per-agency connect exists
+        if (!in_array('paypal', $connected, true) && $this->payPalService->resolveCredentials($agencyId)) {
+            $connected[] = 'paypal';
+        }
+
+        return array_values(array_unique($connected));
     }
 
     // GET /api/v1/invoices/{invoice}/payment-cancel — public PayPal redirect

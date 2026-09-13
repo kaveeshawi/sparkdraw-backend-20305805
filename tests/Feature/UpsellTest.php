@@ -62,4 +62,33 @@ class UpsellTest extends TestCase
 
         $this->actingAs($pm)->patchJson("/api/v1/upsell-suggestions/{$suggestion->id}/approve")->assertStatus(403);
     }
+
+    public function test_admin_can_send_and_undo_upsell(): void
+    {
+        ['admin' => $admin, 'suggestion' => $suggestion] = $this->seedUpsellData();
+
+        $this->actingAs($admin)
+            ->patchJson("/api/v1/upsell-suggestions/{$suggestion->id}/send")
+            ->assertOk()
+            ->assertJsonPath('data.client_status', 'shown')
+            ->assertJsonPath('data.admin_status', 'approved');
+
+        $this->assertDatabaseHas('upsell_suggestions', [
+            'id' => $suggestion->id,
+            'client_status' => 'shown',
+            'admin_status' => 'approved',
+        ]);
+
+        $this->actingAs($admin)
+            ->patchJson("/api/v1/upsell-suggestions/{$suggestion->id}/undo")
+            ->assertOk()
+            ->assertJsonPath('data.client_status', 'hidden')
+            ->assertJsonPath('data.admin_status', 'pending');
+
+        $this->assertDatabaseHas('upsell_suggestions', [
+            'id' => $suggestion->id,
+            'client_status' => 'hidden',
+            'admin_status' => 'pending',
+        ]);
+    }
 }

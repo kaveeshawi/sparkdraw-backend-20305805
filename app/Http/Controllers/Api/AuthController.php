@@ -64,6 +64,12 @@ class AuthController extends Controller
             ])->status(401);
         }
 
+        if ($user->isAccessRevoked()) {
+            throw ValidationException::withMessages([
+                'email' => ['Your access to this agency has been revoked. Contact your agency admin.'],
+            ])->status(403);
+        }
+
         $token = $user->createToken('api-token')->plainTextToken;
 
         return $this->success([
@@ -96,12 +102,20 @@ class AuthController extends Controller
             'email'    => $user->email,
             'role'     => $user->role,
             'agency_id' => $user->agency_id,
+            'permissions' => $user->permissionsMap(),
             'agency'   => $agency ? [
-                'id'           => $agency->id,
-                'name'         => $agency->name,
-                'domain_slug'  => $agency->domain_slug,
-                'brand_colors' => $agency->brand_colors,
-                'logo_path'    => $agency->logo_path,
+                'id'             => $agency->id,
+                'name'           => $agency->name,
+                'domain_slug'    => $agency->domain_slug,
+                'brand_colors'   => $agency->brand_colors,
+                'logo_path'      => $agency->logo_path,
+                'logo_dark_path' => $agency->logo_dark_path ?? null,
+                'currency'       => strtoupper($agency->currency ?? 'USD'),
+                'email'          => $agency->email ?? null,
+                'phone'          => $agency->phone ?? null,
+                'website'        => $agency->website ?? null,
+                'address'        => $agency->address ?? null,
+                'social_links'   => $agency->social_links ?? null,
             ] : null,
         ];
     }

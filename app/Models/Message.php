@@ -10,7 +10,14 @@ class Message extends Model
 {
     use HasAgencyScope;
 
-    protected $fillable = ['agency_id', 'project_id', 'sender_id', 'body', 'sentiment_score'];
+    protected $fillable = [
+        'agency_id',
+        'project_id',
+        'sender_id',
+        'recipient_id',
+        'body',
+        'sentiment_score',
+    ];
 
     protected $casts = [
         'sentiment_score' => 'float',
@@ -24,5 +31,10 @@ class Message extends Model
     public function sender(): BelongsTo
     {
         return $this->belongsTo(User::class, 'sender_id');
+    }
+
+    public function recipient(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'recipient_id');
     }
 }

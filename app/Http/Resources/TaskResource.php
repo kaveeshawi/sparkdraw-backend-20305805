@@ -10,7 +10,11 @@ class TaskResource extends JsonResource
     public function toArray(Request $request): array
     {
         $assignee = $this->whenLoaded('assignee', function () {
-            $name = $this->assignee?->name ?? '';
+            if (!$this->assignee) {
+                return null;
+            }
+
+            $name = $this->assignee->name ?? '';
             // Avatar initials: first letter of each word, max 2
             $initials = collect(explode(' ', $name))
                 ->filter()
@@ -41,6 +45,7 @@ class TaskResource extends JsonResource
             'deadline'         => $this->deadline?->toDateString(),
             'milestone_id'     => $this->milestone_id,
             'project_id'       => $this->project_id,
+            'assignee_id'      => $this->assignee_id,
             'project'          => $this->whenLoaded('project', fn () => [
                 'id'    => $this->project->id,
                 'name'  => $this->project->name,

@@ -4,7 +4,6 @@ namespace Tests\Feature;
 
 use App\Mail\TeamInviteMail;
 use App\Models\Agency;
-use App\Models\PasswordSetupToken;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
@@ -53,22 +52,7 @@ class TeamInviteTest extends TestCase
         ], $overrides);
     }
 
-    private function assertResponseHasNoCredentialKeys(array $payload): void
-    {
-        $forbidden = ['temporary_password', 'password', 'credentials_message'];
-
-        foreach ($forbidden as $key) {
-            $this->assertArrayNotHasKey($key, $payload, "Response must not contain key: {$key}");
-        }
-
-        if (isset($payload['data']) && is_array($payload['data'])) {
-            foreach ($forbidden as $key) {
-                $this->assertArrayNotHasKey($key, $payload['data'], "Response data must not contain key: {$key}");
-            }
-        }
-    }
-
-    public function test_invite_returns_invite_url_not_password(): void
+    public function test_invite_returns_temporary_password_credentials(): void
     {
         ['user' => $admin] = $this->createAgencyWithUser('admin');
 
@@ -78,32 +62,49 @@ class TeamInviteTest extends TestCase
 
         $response->assertStatus(201)
             ->assertJsonPath('success', true)
-            ->assertJsonPath('data.invite_status', 'invite_pending')
+            ->assertJsonPath('data.invite_status', 'active')
+            ->assertJsonPath('data.email', 'alex@example.com')
             ->assertJsonStructure([
                 'data' => [
                     'id',
                     'name',
                     'email',
                     'role',
-                    'department',
-                    'employment_type',
-                    'availability',
-                    'phone',
-                    'job_title',
-                    'invite_url',
+                    'temporary_password',
                 ],
             ]);
 
-        $inviteUrl = $response->json('data.invite_url');
-        $this->assertStringContainsString('/set-password?token=', $inviteUrl);
+        $password = $response->json('data.temporary_password');
+        $this->assertNotEmpty($password);
+        $this->assertGreaterThanOrEqual(8, strlen($password));
 
-        $this->assertDatabaseCount('password_setup_tokens', 1);
+        $member = User::where('email', 'alex@example.com')->first();
+        $this->assertTrue(Hash::check($password, $member->password));
 
-        Mail::assertSent(TeamInviteMail::class, function (TeamInviteMail $mail) {
-            return str_contains($mail->inviteUrl, '/set-password?token=');
+        Mail::assertSent(TeamInviteMail::class, function (TeamInviteMail $mail) use ($password) {
+            return $mail->temporaryPassword === $password
+                && str_contains($mail->loginUrl, '/login');
         });
 
-        $this->assertResponseHasNoCredentialKeys($response->json());
+        $this->postJson('/api/v1/login', [
+            'email' => 'alex@example.com',
+            'password' => $password,
+        ])->assertOk()->assertJsonPath('data.user.role', 'member');
+    }
+
+    public function test_invite_without_email_still_returns_credentials(): void
+    {
+        ['user' => $admin] = $this->createAgencyWithUser('admin');
+
+        $response = $this->actingAs($admin)->postJson('/api/v1/team/invite', $this->validInvitePayload([
+            'send_email' => false,
+        ]));
+
+        $response->assertStatus(201)
+            ->assertJsonPath('data.invite_status', 'active')
+            ->assertJsonStructure(['data' => ['temporary_password', 'email']]);
+
+        Mail::assertNothingSent();
     }
 
     public function test_invite_stores_profile_fields_and_sets_availability_offline(): void
@@ -134,42 +135,31 @@ class TeamInviteTest extends TestCase
         $this->actingAs($admin)->postJson("/api/v1/team/{$memberId}/resend-invite")
             ->assertStatus(200)
             ->assertJsonPath('success', true)
-            ->assertJsonStructure(['data' => ['invite_url']]);
+            ->assertJsonStructure(['data' => ['temporary_password', 'email']]);
 
         $this->actingAs($admin)->postJson("/api/v1/team/{$memberId}/resend-invite")
             ->assertStatus(429)
             ->assertJsonPath('success', false);
     }
 
-    public function test_response_json_must_not_contain_credential_keys(): void
+    public function test_member_can_view_own_team_profile(): void
     {
-        ['user' => $admin] = $this->createAgencyWithUser('admin');
+        ['agency' => $agency, 'user' => $admin] = $this->createAgencyWithUser('admin');
 
-        $inviteResponse = $this->actingAs($admin)->postJson('/api/v1/team/invite', $this->validInvitePayload([
-            'email' => 'secure@example.com',
-        ]));
+        $member = User::create([
+            'agency_id' => $agency->id,
+            'role' => 'member',
+            'name' => 'Portal Member',
+            'email' => 'portal-member@test.com',
+            'password' => Hash::make('password'),
+        ]);
 
-        $this->assertResponseHasNoCredentialKeys($inviteResponse->json());
+        $this->actingAs($member)->getJson("/api/v1/team/{$member->id}")
+            ->assertOk()
+            ->assertJsonPath('data.email', 'portal-member@test.com');
 
-        $memberId = $inviteResponse->json('data.id');
-
-        $resendResponse = $this->actingAs($admin)->postJson("/api/v1/team/{$memberId}/resend-invite");
-
-        $this->assertResponseHasNoCredentialKeys($resendResponse->json());
-    }
-
-    public function test_invite_without_email_is_invite_not_sent(): void
-    {
-        ['user' => $admin] = $this->createAgencyWithUser('admin');
-
-        $response = $this->actingAs($admin)->postJson('/api/v1/team/invite', $this->validInvitePayload([
-            'send_email' => false,
-        ]));
-
-        $response->assertStatus(201)
-            ->assertJsonPath('data.invite_status', 'invite_not_sent');
-
-        $this->assertDatabaseCount('password_setup_tokens', 0);
+        $this->actingAs($member)->getJson("/api/v1/team/{$admin->id}")
+            ->assertStatus(403);
     }
 
     public function test_non_admin_cannot_invite(): void

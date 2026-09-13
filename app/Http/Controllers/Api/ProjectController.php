@@ -11,6 +11,7 @@ use App\Http\Traits\ApiResponse;
 use App\Models\Milestone;
 use App\Models\Project;
 use App\Models\ProjectEvent;
+use App\Models\Task;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -22,10 +23,15 @@ class ProjectController extends Controller
     // GET /api/v1/projects
     public function index(Request $request): JsonResponse
     {
+        $user = $request->user();
+
         // HasAgencyScope automatically scopes to auth user's agency_id.
         // withCount uses conditional subqueries to avoid N+1 for progress calculation.
-        $projects = Project::with([
-                'client:id,company_name',
+        $projects = Project::query()
+            ->visibleTo($user)
+            ->with([
+                'client:id,company_name,contact_user_id',
+                'client.contactUser:id,name,email,avatar_path',
                 'latestHealthScore',
                 'milestones' => fn ($q) => $q->orderBy('due_date'),
                 'tasks' => fn ($q) => $q->whereNotNull('assignee_id')->with('assignee:id,name,role,avatar_path'),
@@ -49,6 +55,10 @@ class ProjectController extends Controller
         $user = $request->user();
 
         $project = DB::transaction(function () use ($request, $user) {
+            $startDate = $request->start_date
+                ? \Carbon\Carbon::parse($request->start_date)
+                : now()->startOfDay();
+
             $project = Project::create([
                 'agency_id'       => $user->agency_id,
                 'client_id'       => $request->client_id,
@@ -59,7 +69,7 @@ class ProjectController extends Controller
                 'priority'        => $request->input('priority', 'medium'),
                 'budget'          => $request->budget,
                 'estimated_hours' => $request->estimated_hours,
-                'start_date'      => $request->start_date,
+                'start_date'      => $startDate->toDateString(),
                 'end_date'        => $request->end_date,
                 'color'           => $request->color ?? '#802AEE',
             ]);
@@ -77,28 +87,43 @@ class ProjectController extends Controller
                 ->filter(fn ($m) => !empty($m['title'] ?? null));
 
             if ($submittedMilestones->isNotEmpty()) {
-                $startDate = \Carbon\Carbon::parse($request->start_date);
-
                 foreach ($submittedMilestones as $m) {
                     $dueDate = isset($m['due_offset_days'])
                         ? $startDate->copy()->addDays((int) $m['due_offset_days'])
-                        : $request->start_date;
+                        : $startDate->copy();
 
-                    Milestone::create([
+                    $milestone = Milestone::create([
                         'agency_id'  => $user->agency_id,
                         'project_id' => $project->id,
                         'title'      => $m['title'],
-                        'due_date'   => $dueDate,
+                        'due_date'   => $dueDate->toDateString(),
                         'status'     => 'pending',
                     ]);
+
+                    $tasks = collect($m['tasks'] ?? [])
+                        ->filter(fn ($t) => !empty($t['title'] ?? null))
+                        ->take(8);
+
+                    foreach ($tasks as $t) {
+                        Task::create([
+                            'agency_id'       => $user->agency_id,
+                            'project_id'      => $project->id,
+                            'milestone_id'    => $milestone->id,
+                            'title'           => $t['title'],
+                            'status'          => 'todo',
+                            'priority'        => in_array($t['priority'] ?? 'medium', ['low', 'medium', 'high'], true)
+                                ? $t['priority']
+                                : 'medium',
+                            'estimated_hours' => isset($t['estimated_hours']) ? (int) $t['estimated_hours'] : null,
+                        ]);
+                    }
                 }
             } else {
-                // Auto-generate welcome milestone so the project has structure from day one
                 Milestone::create([
                     'agency_id'  => $user->agency_id,
                     'project_id' => $project->id,
                     'title'      => 'Project Kickoff',
-                    'due_date'   => $request->start_date,
+                    'due_date'   => $startDate->toDateString(),
                     'status'     => 'pending',
                 ]);
             }
@@ -116,17 +141,22 @@ class ProjectController extends Controller
             return $project;
         });
 
-        $project->load(['client:id,company_name', 'milestones', 'latestHealthScore', 'teamMembers:id,name,role,avatar_path']);
+        $project->load(['client:id,company_name,contact_user_id', 'client.contactUser:id,name,email,avatar_path', 'milestones.tasks', 'latestHealthScore', 'teamMembers:id,name,role,avatar_path']);
 
         return $this->created(new ProjectResource($project), 'Project created successfully.');
     }
 
     // GET /api/v1/projects/{project}
-    public function show(Project $project): JsonResponse
+    public function show(Request $request, Project $project): JsonResponse
     {
+        if (!$project->isVisibleTo($request->user())) {
+            return $this->notFound('Project not found.');
+        }
+
         // Route model binding resolves through HasAgencyScope — 404 if wrong agency.
         $project->load([
-            'client:id,company_name',
+            'client:id,company_name,contact_user_id',
+            'client.contactUser:id,name,email,avatar_path',
             'latestHealthScore',
             'milestones.tasks',
             'tasks.assignee:id,name,role,avatar_path',
@@ -139,16 +169,34 @@ class ProjectController extends Controller
     // PUT /api/v1/projects/{project}
     public function update(UpdateProjectRequest $request, Project $project): JsonResponse
     {
-        $changed = array_keys($request->validated());
+        $validated = $request->validated();
+        $teamMemberIds = array_key_exists('team_member_ids', $validated)
+            ? collect($validated['team_member_ids'] ?? [])->filter()->unique()->values()->all()
+            : null;
+        unset($validated['team_member_ids']);
 
-        $project->update($request->validated());
+        $changed = array_keys($validated);
+        if ($teamMemberIds !== null) {
+            $changed[] = 'team_member_ids';
+        }
+
+        $project->update($validated);
+
+        if ($teamMemberIds !== null) {
+            $project->teamMembers()->sync($teamMemberIds);
+        }
 
         ProjectEvent::log($request->user()->agency_id, $project->id, 'project_updated', [
             'changed_fields' => $changed,
             'updated_by'     => $request->user()->id,
         ]);
 
-        $project->load(['client:id,company_name', 'latestHealthScore']);
+        $project->load([
+            'client:id,company_name,contact_user_id',
+            'client.contactUser:id,name,email,avatar_path',
+            'latestHealthScore',
+            'teamMembers:id,name,role,avatar_path',
+        ]);
 
         return $this->success(new ProjectResource($project), 'Project updated successfully.');
     }

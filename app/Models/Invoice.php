@@ -13,14 +13,16 @@ class Invoice extends Model
     protected $fillable = [
         'agency_id', 'client_id', 'project_id', 'invoice_number',
         'amount', 'line_items', 'status', 'due_date', 'notes',
+        'template_id', 'template_snapshot',
         'paypal_order_id', 'paid_at',
     ];
 
     protected $casts = [
-        'amount'     => 'decimal:2',
-        'line_items' => 'array',
-        'due_date'   => 'date',
-        'paid_at'    => 'datetime',
+        'amount'            => 'decimal:2',
+        'line_items'        => 'array',
+        'template_snapshot' => 'array',
+        'due_date'          => 'date',
+        'paid_at'           => 'datetime',
     ];
 
     public static function generateInvoiceNumber(int $agencyId): string

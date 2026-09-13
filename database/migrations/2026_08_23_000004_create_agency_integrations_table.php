@@ -11,7 +11,7 @@ return new class extends Migration
         Schema::create('agency_integrations', function (Blueprint $table) {
             $table->id();
             $table->foreignId('agency_id')->constrained('agencies')->cascadeOnDelete();
-            $table->string('provider'); // mail_smtp|google_meet|microsoft_teams|stripe
+            $table->string('provider'); // mail_smtp|google_meet|microsoft_teams|zoom|stripe|paypal|wise|slack|google_drive
             $table->string('status')->default('disconnected'); // connected|disconnected
             $table->text('credentials')->nullable();
             $table->foreignId('connected_by')->nullable()->constrained('users')->nullOnDelete();

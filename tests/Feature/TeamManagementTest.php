@@ -99,6 +99,39 @@ class TeamManagementTest extends TestCase
         $this->assertSame('Founder', $admin->job_title);
     }
 
+    public function test_member_access_can_be_revoked_and_restored_without_deleting(): void
+    {
+        ['admin' => $admin, 'member' => $member] = $this->seedAgency();
+
+        $this->actingAs($admin)->postJson("/api/v1/team/{$member->id}/revoke-access")
+            ->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.access_revoked', true)
+            ->assertJsonPath('data.invite_status', 'access_revoked');
+
+        $this->assertDatabaseHas('users', [
+            'id' => $member->id,
+        ]);
+        $this->assertNotNull($member->fresh()->access_revoked_at);
+
+        $this->actingAs($admin)->postJson("/api/v1/team/{$member->id}/restore-access")
+            ->assertOk()
+            ->assertJsonPath('data.access_revoked', false);
+
+        $this->assertNull($member->fresh()->access_revoked_at);
+    }
+
+    public function test_revoked_member_cannot_login(): void
+    {
+        ['member' => $member] = $this->seedAgency();
+        $member->update(['access_revoked_at' => now()]);
+
+        $this->postJson('/api/v1/auth/login', [
+            'email' => 'member-team@test.com',
+            'password' => 'password',
+        ])->assertStatus(403);
+    }
+
     public function test_member_can_be_removed(): void
     {
         ['admin' => $admin, 'member' => $member] = $this->seedAgency();
@@ -174,7 +207,10 @@ class TeamManagementTest extends TestCase
         $response->assertCreated()
             ->assertJsonPath('success', true)
             ->assertJsonPath('data.email', 'new-member@test.com')
-            ->assertJsonPath('data.employee_id', 'EMP-0002');
+            ->assertJsonPath('data.employee_id', 'EMP-0002')
+            ->assertJsonStructure(['data' => ['temporary_password']]);
+
+        $this->assertNotEmpty($response->json('data.temporary_password'));
 
         $this->assertDatabaseHas('users', [
             'email' => 'new-member@test.com',

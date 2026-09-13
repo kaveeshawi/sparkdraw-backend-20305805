@@ -3,7 +3,9 @@
 namespace App\Models;
 
 use App\Services\SentimentService;
+use App\Support\Permissions;
 use App\Traits\HasAgencyScope;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
@@ -51,6 +53,37 @@ class Project extends Model
     public function teamMembers(): BelongsToMany
     {
         return $this->belongsToMany(User::class, 'project_team_members')->withTimestamps();
+    }
+
+    /**
+     * Projects visible to a user: admins / roles with projects.view_all see everything;
+     * everyone else only sees projects they are on the team for, or have a task on.
+     */
+    public function scopeVisibleTo(Builder $query, User $user): Builder
+    {
+        if ($user->role === 'admin' || $user->hasPermission(Permissions::PROJECTS_VIEW_ALL)) {
+            return $query;
+        }
+
+        $userId = $user->id;
+
+        return $query->where(function (Builder $q) use ($userId) {
+            $q->whereHas('teamMembers', fn (Builder $m) => $m->where('users.id', $userId))
+                ->orWhereHas('tasks', fn (Builder $t) => $t->where('assignee_id', $userId));
+        });
+    }
+
+    public function isVisibleTo(User $user): bool
+    {
+        if ($user->role === 'admin' || $user->hasPermission(Permissions::PROJECTS_VIEW_ALL)) {
+            return true;
+        }
+
+        if ($this->teamMembers()->where('users.id', $user->id)->exists()) {
+            return true;
+        }
+
+        return $this->tasks()->where('assignee_id', $user->id)->exists();
     }
 
     public function timeLogs(): \Illuminate\Database\Eloquent\Relations\HasManyThrough

@@ -173,7 +173,12 @@ class AIBridgeTest extends TestCase
                     'tier'          => 'high',
                     'signals'       => ['project 90% complete'],
                     'model_version' => 'ensemble-v2-calibrated',
-                    'service'       => 'upsell_recommended',
+                    'service'       => 'premium_retainer',
+                    'options'       => [
+                        ['service' => 'premium_retainer', 'confidence' => 0.85, 'rank' => 1],
+                        ['service' => 'seo_package', 'confidence' => 0.748, 'rank' => 2],
+                        ['service' => 'monthly_maintenance', 'confidence' => 0.646, 'rank' => 3],
+                    ],
                     'reason'        => null,
                 ],
             ], 200),
@@ -191,13 +196,18 @@ class AIBridgeTest extends TestCase
         $response->assertStatus(200)
             ->assertJsonPath('success', true)
             ->assertJsonPath('data.raw.upsell_ready', true)
-            ->assertJsonPath('data.raw.tier', 'high');
+            ->assertJsonPath('data.raw.tier', 'high')
+            ->assertJsonCount(3, 'data.suggestions');
 
         $this->assertDatabaseHas('upsell_suggestions', [
             'agency_id'    => $agency->id,
             'project_id'   => $project->id,
-            'service_type' => 'upsell_recommended',
+            'service_type' => 'premium_retainer',
             'admin_status' => 'pending',
+        ]);
+        $this->assertDatabaseHas('upsell_suggestions', [
+            'project_id'   => $project->id,
+            'service_type' => 'seo_package',
         ]);
 
         Http::assertSent(function ($request) {
@@ -229,8 +239,10 @@ class AIBridgeTest extends TestCase
         $client  = $this->makeClient($agency);
         $project = $this->makeProject($agency, $client);
 
+        // Explicit force=false keeps soft threshold behaviour for automated callers.
         $this->actingAs($admin)->postJson('/api/v1/ai/upsell', [
             'project_id' => $project->id,
+            'force'      => false,
         ]);
 
         $this->assertDatabaseMissing('upsell_suggestions', [

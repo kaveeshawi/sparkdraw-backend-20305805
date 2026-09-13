@@ -230,4 +230,21 @@ class WorkSessionTest extends TestCase
             'agency_id' => $user->agency_id,
         ]);
     }
+
+    public function test_admin_can_set_own_availability_without_clock_in(): void
+    {
+        ['user' => $admin] = $this->createAgencyWithUser('admin');
+
+        $this->actingAs($admin)
+            ->patchJson('/api/v1/me/availability', ['availability' => 'busy'])
+            ->assertOk()
+            ->assertJsonPath('data.availability', 'busy');
+
+        $this->assertSame('busy', $admin->fresh()->availability);
+
+        $this->actingAs($admin)
+            ->patchJson('/api/v1/me/availability', ['availability' => 'offline'])
+            ->assertOk()
+            ->assertJsonPath('data.availability', 'offline');
+    }
 }

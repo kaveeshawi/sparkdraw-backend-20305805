@@ -1,11 +1,16 @@
 <p>Hi {{ $user->name }},</p>
 
-<p>You have been invited to join your agency workspace on Sparkdraw.</p>
+<p>You have been added to your agency workspace on Sparkdraw.</p>
 
-<p>Click the link below to set your password and activate your account:</p>
+<p>Use these credentials to sign in:</p>
 
-<p><a href="{{ $inviteUrl }}">{{ $inviteUrl }}</a></p>
+<ul>
+  <li><strong>Email:</strong> {{ $user->email }}</li>
+  <li><strong>Temporary password:</strong> {{ $temporaryPassword }}</li>
+</ul>
 
-<p>This link expires in 48 hours.</p>
+<p><a href="{{ $loginUrl }}">{{ $loginUrl }}</a></p>
 
-<p>If you did not expect this invitation, you can ignore this email.</p>
+<p>After you log in you will land in your member portal. Please change your password from your profile if your agency requires it.</p>
+
+<p>If you did not expect this invitation, contact your agency admin.</p>

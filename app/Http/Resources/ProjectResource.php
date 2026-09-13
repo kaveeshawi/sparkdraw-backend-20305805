@@ -5,6 +5,7 @@ namespace App\Http\Resources;
 use App\Helpers\ProjectProgress;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
+use Illuminate\Support\Facades\Storage;
 
 class ProjectResource extends JsonResource
 {
@@ -26,10 +27,29 @@ class ProjectResource extends JsonResource
             'client_id'       => $this->client_id,
 
             // Client
-            'client' => $this->whenLoaded('client', fn() => [
-                'id'           => $this->client->id,
-                'company_name' => $this->client->company_name,
-            ]),
+            'client' => $this->whenLoaded('client', function () {
+                $client = $this->client;
+                $contact = $client->relationLoaded('contactUser') ? $client->contactUser : null;
+                $avatarPath = $contact?->avatar_path;
+
+                return [
+                    'id'               => $client->id,
+                    'company_name'     => $client->company_name,
+                    'contact_user_id'  => $client->contact_user_id,
+                    'contact_name'     => $contact?->name,
+                    'contact_email'    => $contact?->email,
+                    'avatar_path'      => $avatarPath,
+                    'avatar_url'       => $avatarPath
+                        ? rtrim(config('app.url'), '/').Storage::disk('public')->url($avatarPath)
+                        : null,
+                    'contact_user'     => $contact ? [
+                        'id'          => $contact->id,
+                        'name'        => $contact->name,
+                        'email'       => $contact->email,
+                        'avatar_path' => $contact->avatar_path,
+                    ] : null,
+                ];
+            }),
 
             // Health score — latest computed snapshot
             'health_score' => $this->whenLoaded('latestHealthScore', fn() => $this->latestHealthScore ? [

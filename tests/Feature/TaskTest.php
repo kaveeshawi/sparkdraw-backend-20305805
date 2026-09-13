@@ -329,4 +329,118 @@ class TaskTest extends TestCase
         // HasAgencyScope on Project causes 404 — correct (no data leak)
         $response->assertStatus(404);
     }
+
+    public function test_admin_can_list_team_tasks_filtered_by_assignee(): void
+    {
+        $agency  = $this->makeAgency('task-team1');
+        $admin   = $this->makeUser($agency, 'admin');
+        $memberA = $this->makeUser($agency, 'member');
+        $memberB = $this->makeUser($agency, 'member');
+        $client  = $this->makeClient($agency);
+        $project = $this->makeProject($agency, $client);
+
+        $taskA = $this->makeTask($agency, $project);
+        $taskA->update(['assignee_id' => $memberA->id, 'title' => 'Member A task']);
+
+        $taskB = $this->makeTask($agency, $project);
+        $taskB->update(['assignee_id' => $memberB->id, 'title' => 'Member B task']);
+
+        $response = $this->actingAs($admin)
+            ->getJson('/api/v1/tasks?mine_only=0&assignee_id=' . $memberA->id);
+
+        $response->assertStatus(200);
+        $titles = collect($response->json('data'))->pluck('title');
+        $this->assertTrue($titles->contains('Member A task'));
+        $this->assertFalse($titles->contains('Member B task'));
+    }
+
+    public function test_member_cannot_browse_other_members_tasks_via_mine_only_zero(): void
+    {
+        $agency  = $this->makeAgency('task-team2');
+        $memberA = $this->makeUser($agency, 'member');
+        $memberB = $this->makeUser($agency, 'member');
+        $client  = $this->makeClient($agency);
+        $project = $this->makeProject($agency, $client);
+
+        $taskA = $this->makeTask($agency, $project);
+        $taskA->update(['assignee_id' => $memberA->id, 'title' => 'Only A']);
+
+        $taskB = $this->makeTask($agency, $project);
+        $taskB->update(['assignee_id' => $memberB->id, 'title' => 'Only B']);
+
+        $response = $this->actingAs($memberA)
+            ->getJson('/api/v1/tasks?mine_only=0');
+
+        $response->assertStatus(200);
+        $titles = collect($response->json('data'))->pluck('title');
+        $this->assertTrue($titles->contains('Only A'));
+        $this->assertFalse($titles->contains('Only B'));
+    }
+
+    public function test_productivity_returns_project_breakdown(): void
+    {
+        $agency  = $this->makeAgency('task-prod1');
+        $admin   = $this->makeUser($agency, 'admin');
+        $member  = $this->makeUser($agency, 'member');
+        $client  = $this->makeClient($agency);
+        $project = $this->makeProject($agency, $client);
+        $project->update(['name' => 'Alpha', 'color' => '#10b981']);
+
+        $task = $this->makeTask($agency, $project, null, 'in_progress');
+        $task->update(['assignee_id' => $member->id]);
+
+        TimeLog::create([
+            'agency_id'   => $agency->id,
+            'task_id'     => $task->id,
+            'user_id'     => $member->id,
+            'hours'       => 3.5,
+            'logged_date' => now()->toDateString(),
+            'notes'       => null,
+        ]);
+
+        $from = now()->startOfWeek()->toDateString();
+        $to   = now()->endOfWeek()->toDateString();
+
+        $response = $this->actingAs($admin)
+            ->getJson("/api/v1/tasks/productivity?from={$from}&to={$to}");
+
+        $response->assertStatus(200)
+            ->assertJsonPath('data.totals.hours', 3.5)
+            ->assertJsonPath('data.by_project.0.name', 'Alpha')
+            ->assertJsonPath('data.by_project.0.hours', 3.5)
+            ->assertJsonPath('data.by_project.0.active_tasks', 1);
+
+        $this->assertNotEmpty($response->json('data.by_day'));
+    }
+
+    public function test_productivity_is_tenant_isolated(): void
+    {
+        $agencyA = $this->makeAgency('task-proda');
+        $adminA  = $this->makeUser($agencyA, 'admin');
+        $memberA = $this->makeUser($agencyA, 'member');
+        $clientA = $this->makeClient($agencyA);
+        $projectA = $this->makeProject($agencyA, $clientA);
+        $taskA = $this->makeTask($agencyA, $projectA, null, 'in_progress');
+        $taskA->update(['assignee_id' => $memberA->id]);
+        TimeLog::create([
+            'agency_id'   => $agencyA->id,
+            'task_id'     => $taskA->id,
+            'user_id'     => $memberA->id,
+            'hours'       => 5,
+            'logged_date' => now()->toDateString(),
+        ]);
+
+        $agencyB = $this->makeAgency('task-prodb');
+        $adminB  = $this->makeUser($agencyB, 'admin');
+
+        $from = now()->startOfWeek()->toDateString();
+        $to   = now()->endOfWeek()->toDateString();
+
+        $response = $this->actingAs($adminB)
+            ->getJson("/api/v1/tasks/productivity?from={$from}&to={$to}");
+
+        $response->assertStatus(200)
+            ->assertJsonPath('data.totals.hours', 0)
+            ->assertJsonPath('data.by_project', []);
+    }
 }

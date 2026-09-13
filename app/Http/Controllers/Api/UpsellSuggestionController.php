@@ -84,4 +84,63 @@ class UpsellSuggestionController extends Controller
             'admin_status' => 'rejected',
         ], 'Upsell suggestion rejected.');
     }
+
+    // PATCH /api/v1/upsell-suggestions/{upsellSuggestion}/send
+    public function send(Request $request, UpsellSuggestion $upsellSuggestion): JsonResponse
+    {
+        $upsellSuggestion->update([
+            'admin_status'  => 'approved',
+            'client_status' => 'shown',
+        ]);
+
+        ProjectEvent::log(
+            $upsellSuggestion->agency_id,
+            $upsellSuggestion->project_id,
+            'upsell_sent',
+            [
+                'upsell_id'    => $upsellSuggestion->id,
+                'service_type' => $upsellSuggestion->service_type,
+                'confidence'   => $upsellSuggestion->confidence,
+                'sent_by'      => $request->user()->id,
+            ]
+        );
+
+        return $this->success([
+            'id'            => $upsellSuggestion->id,
+            'admin_status'  => 'approved',
+            'client_status' => 'shown',
+        ], 'Upsell suggestion sent to client.');
+    }
+
+    // PATCH /api/v1/upsell-suggestions/{upsellSuggestion}/undo
+    public function undo(Request $request, UpsellSuggestion $upsellSuggestion): JsonResponse
+    {
+        $previous = [
+            'admin_status'  => $upsellSuggestion->admin_status,
+            'client_status' => $upsellSuggestion->client_status,
+        ];
+
+        $upsellSuggestion->update([
+            'admin_status'  => 'pending',
+            'client_status' => 'hidden',
+        ]);
+
+        ProjectEvent::log(
+            $upsellSuggestion->agency_id,
+            $upsellSuggestion->project_id,
+            'upsell_undone',
+            [
+                'upsell_id'    => $upsellSuggestion->id,
+                'service_type' => $upsellSuggestion->service_type,
+                'previous'     => $previous,
+                'undone_by'    => $request->user()->id,
+            ]
+        );
+
+        return $this->success([
+            'id'            => $upsellSuggestion->id,
+            'admin_status'  => 'pending',
+            'client_status' => 'hidden',
+        ], 'Upsell action undone.');
+    }
 }

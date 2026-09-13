@@ -25,12 +25,18 @@ class UpdateProjectRequest extends FormRequest
             'end_date'        => ['sometimes', 'date', 'after_or_equal:start_date'],
             'color'           => ['sometimes', 'string', 'regex:/^#[0-9A-Fa-f]{6}$/'],
             'client_id'       => ['sometimes', 'integer', 'exists:clients,id'],
+            'team_member_ids'   => ['sometimes', 'array'],
+            'team_member_ids.*' => ['integer', 'exists:users,id'],
         ];
     }
 
     public function withValidator($validator): void
     {
-        $updatable = ['name', 'type', 'description', 'status', 'priority', 'budget', 'estimated_hours', 'start_date', 'end_date', 'color', 'client_id'];
+        $updatable = [
+            'name', 'type', 'description', 'status', 'priority', 'budget',
+            'estimated_hours', 'start_date', 'end_date', 'color', 'client_id',
+            'team_member_ids',
+        ];
 
         $validator->after(function ($v) use ($updatable) {
             if (empty(array_intersect(array_keys($this->all()), $updatable))) {

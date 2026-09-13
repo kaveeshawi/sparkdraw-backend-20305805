@@ -18,6 +18,7 @@ use Carbon\Carbon;
 use App\Services\AgencyMailer;
 use App\Services\PasswordSetupService;
 use App\Services\SentimentService;
+use App\Support\Permissions;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -39,6 +40,7 @@ class ClientController extends Controller
         $viewer = $request->user();
 
         $query = Client::query()
+            ->visibleTo($viewer)
             ->with([
                 'agency:id,domain_slug',
                 'contactUser:id,name,email,phone,job_title,avatar_path,profile_meta,updated_at',
@@ -65,6 +67,10 @@ class ClientController extends Controller
 
     public function show(Request $request, Client $client): JsonResponse
     {
+        if (!$client->isVisibleTo($request->user())) {
+            return $this->notFound('Client not found.');
+        }
+
         $client->loadCount([
             'projects',
             'projects as active_projects_count' => fn ($q) => $q->where('status', '!=', 'completed'),
@@ -317,9 +323,11 @@ class ClientController extends Controller
         );
     }
 
-    public function count(): JsonResponse
+    public function count(Request $request): JsonResponse
     {
-        return $this->success(['count' => Client::count()]);
+        $count = Client::query()->visibleTo($request->user())->count();
+
+        return $this->success(['count' => $count]);
     }
 
     private function sendInvite(Client $client, Agency $agency): string
@@ -346,9 +354,9 @@ class ClientController extends Controller
 
     private function clientPayload(Client $client, User $viewer, ?string $inviteUrl = null): array
     {
-        $canManage = in_array($viewer->role, ['admin', 'pm'], true);
+        $canManage = $viewer->role === 'admin' || $viewer->hasPermission(Permissions::CLIENTS);
         $canInvite = $viewer->role === 'admin';
-        $showContact = $canManage;
+        $showContact = $viewer->role === 'admin' || $viewer->hasPermission(Permissions::CLIENT_CONTACT_DETAILS);
 
         $sentiment = $this->resolveSentimentSummary($client);
         $contact = $client->contactUser;

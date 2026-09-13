@@ -20,11 +20,19 @@ class AssetController extends Controller
     // GET /api/v1/assets[?project_id=] — agency-wide, across all projects (Assets Library nav page)
     public function all(Request $request): JsonResponse
     {
+        $user = $request->user();
+        $visibleProjectIds = Project::query()->visibleTo($user)->pluck('id');
+
         $query = Asset::with(['uploader:id,name', 'project:id,name,color'])
+            ->whereIn('project_id', $visibleProjectIds)
             ->orderByDesc('created_at');
 
         if ($request->filled('project_id')) {
-            $query->where('project_id', $request->project_id);
+            $projectId = (int) $request->project_id;
+            if (!$visibleProjectIds->contains($projectId)) {
+                return $this->success([]);
+            }
+            $query->where('project_id', $projectId);
         }
 
         $assets = $query->get()->map(fn (Asset $a) => [

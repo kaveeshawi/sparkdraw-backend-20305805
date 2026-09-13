@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\Permissions;
 use App\Traits\HasAgencyScope;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
@@ -37,6 +38,48 @@ class Client extends Model
     public function projects(): HasMany
     {
         return $this->hasMany(Project::class);
+    }
+
+    /**
+     * Clients visible to a user:
+     * - admin / clients.view_all → all agency clients
+     * - clients.manage only → clients on projects they can see (relevant)
+     * - neither → none
+     */
+    public function scopeVisibleTo(Builder $query, User $user): Builder
+    {
+        if ($user->role === 'admin' || $user->hasPermission(Permissions::CLIENTS_VIEW_ALL)) {
+            return $query;
+        }
+
+        if (!$user->hasPermission(Permissions::CLIENTS)) {
+            return $query->whereRaw('0 = 1');
+        }
+
+        $clientIds = Project::query()
+            ->visibleTo($user)
+            ->pluck('client_id')
+            ->filter()
+            ->unique()
+            ->values();
+
+        return $query->whereIn('id', $clientIds);
+    }
+
+    public function isVisibleTo(User $user): bool
+    {
+        if ($user->role === 'admin' || $user->hasPermission(Permissions::CLIENTS_VIEW_ALL)) {
+            return true;
+        }
+
+        if (!$user->hasPermission(Permissions::CLIENTS)) {
+            return false;
+        }
+
+        return Project::query()
+            ->visibleTo($user)
+            ->where('client_id', $this->id)
+            ->exists();
     }
 
     public function revisions(): HasMany

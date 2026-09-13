@@ -7,10 +7,27 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Agency extends Model
 {
-    protected $fillable = ['name', 'logo_path', 'brand_colors', 'domain_slug'];
+    protected $fillable = [
+        'name',
+        'logo_path',
+        'logo_dark_path',
+        'brand_colors',
+        'domain_slug',
+        'currency',
+        'email',
+        'phone',
+        'website',
+        'address',
+        'social_links',
+    ];
+
+    protected $attributes = [
+        'currency' => 'USD',
+    ];
 
     protected $casts = [
         'brand_colors' => 'array',
+        'social_links' => 'array',
     ];
 
     public function users(): HasMany

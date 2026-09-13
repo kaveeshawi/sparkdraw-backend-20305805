@@ -81,7 +81,7 @@ class ProjectTest extends TestCase
         $response->assertStatus(201)
             ->assertJsonPath('success', true)
             ->assertJsonPath('data.name', 'Website Redesign')
-            ->assertJsonPath('data.status', 'active');
+            ->assertJsonPath('data.status', 'started');
 
         $this->assertDatabaseHas('projects', [
             'agency_id' => $agency->id,
@@ -147,6 +147,81 @@ class ProjectTest extends TestCase
         $projectNames = collect($response->json('data.projects'))->pluck('name');
         $this->assertTrue($projectNames->contains('Agency A Project'));
         $this->assertFalse($projectNames->contains('Agency B Project'));
+    }
+
+    public function test_member_only_sees_assigned_projects(): void
+    {
+        $agency = $this->makeAgency('agency-assign');
+        $admin  = $this->makeUser($agency, 'admin');
+        $member = $this->makeUser($agency, 'member');
+        $client = $this->makeClient($agency);
+
+        $assigned = Project::create([
+            'agency_id'  => $agency->id,
+            'client_id'  => $client->id,
+            'name'       => 'Assigned Project',
+            'type'       => 'web_design',
+            'status'     => 'active',
+            'start_date' => '2026-07-01',
+            'end_date'   => '2026-09-30',
+        ]);
+
+        $hidden = Project::create([
+            'agency_id'  => $agency->id,
+            'client_id'  => $client->id,
+            'name'       => 'Hidden Project',
+            'type'       => 'web_design',
+            'status'     => 'active',
+            'start_date' => '2026-07-01',
+            'end_date'   => '2026-09-30',
+        ]);
+
+        $assigned->teamMembers()->sync([$member->id]);
+
+        $index = $this->actingAs($member)->getJson('/api/v1/projects');
+        $index->assertStatus(200);
+        $names = collect($index->json('data.projects'))->pluck('name');
+        $this->assertTrue($names->contains('Assigned Project'));
+        $this->assertFalse($names->contains('Hidden Project'));
+
+        $this->actingAs($member)->getJson("/api/v1/projects/{$assigned->id}")->assertStatus(200);
+        $this->actingAs($member)->getJson("/api/v1/projects/{$hidden->id}")->assertStatus(404);
+
+        // Admin still sees both
+        $adminIndex = $this->actingAs($admin)->getJson('/api/v1/projects');
+        $adminNames = collect($adminIndex->json('data.projects'))->pluck('name');
+        $this->assertTrue($adminNames->contains('Assigned Project'));
+        $this->assertTrue($adminNames->contains('Hidden Project'));
+    }
+
+    public function test_member_sees_project_when_task_assigned(): void
+    {
+        $agency = $this->makeAgency('agency-taskas');
+        $member = $this->makeUser($agency, 'member');
+        $client = $this->makeClient($agency);
+
+        $project = Project::create([
+            'agency_id'  => $agency->id,
+            'client_id'  => $client->id,
+            'name'       => 'Task Project',
+            'type'       => 'web_design',
+            'status'     => 'active',
+            'start_date' => '2026-07-01',
+            'end_date'   => '2026-09-30',
+        ]);
+
+        \App\Models\Task::create([
+            'agency_id'   => $agency->id,
+            'project_id'  => $project->id,
+            'assignee_id' => $member->id,
+            'title'       => 'Do the thing',
+            'status'      => 'todo',
+            'priority'    => 'medium',
+        ]);
+
+        $index = $this->actingAs($member)->getJson('/api/v1/projects');
+        $names = collect($index->json('data.projects'))->pluck('name');
+        $this->assertTrue($names->contains('Task Project'));
     }
 
     public function test_project_show_includes_milestones_and_tasks(): void
@@ -306,5 +381,140 @@ class ProjectTest extends TestCase
             'project_id' => $project->id,
             'event_type' => 'milestone_completed',
         ]);
+    }
+
+    public function test_create_project_without_start_date_defaults_to_today(): void
+    {
+        $agency = $this->makeAgency('agency-nostart');
+        $admin  = $this->makeUser($agency, 'admin');
+        $client = $this->makeClient($agency);
+
+        $payload = $this->projectPayload($client);
+        unset($payload['start_date']);
+        $payload['end_date'] = now()->addWeeks(6)->toDateString();
+
+        $response = $this->actingAs($admin)->postJson('/api/v1/projects', $payload);
+
+        $response->assertStatus(201)
+            ->assertJsonPath('data.start_date', now()->toDateString());
+    }
+
+    public function test_create_project_with_nested_milestone_tasks(): void
+    {
+        $agency = $this->makeAgency('agency-nested');
+        $admin  = $this->makeUser($agency, 'admin');
+        $client = $this->makeClient($agency);
+
+        $payload = $this->projectPayload($client);
+        $payload['milestones'] = [
+            [
+                'title'           => 'Discovery',
+                'due_offset_days' => 7,
+                'tasks'           => [
+                    ['title' => 'Kickoff call', 'priority' => 'high', 'estimated_hours' => 2],
+                    ['title' => 'Requirements doc', 'priority' => 'medium', 'estimated_hours' => 4],
+                ],
+            ],
+            [
+                'title'           => 'Build',
+                'due_offset_days' => 21,
+                'tasks'           => [
+                    ['title' => 'Implement UI', 'priority' => 'high', 'estimated_hours' => 16],
+                ],
+            ],
+        ];
+
+        $response = $this->actingAs($admin)->postJson('/api/v1/projects', $payload);
+        $response->assertStatus(201);
+
+        $projectId = $response->json('data.id');
+        $this->assertDatabaseHas('milestones', [
+            'project_id' => $projectId,
+            'title'      => 'Discovery',
+        ]);
+        $this->assertDatabaseHas('tasks', [
+            'project_id' => $projectId,
+            'title'      => 'Kickoff call',
+            'priority'   => 'high',
+        ]);
+        $this->assertDatabaseHas('tasks', [
+            'project_id' => $projectId,
+            'title'      => 'Implement UI',
+        ]);
+        $this->assertDatabaseMissing('milestones', [
+            'project_id' => $projectId,
+            'title'      => 'Project Kickoff',
+        ]);
+    }
+
+    public function test_admin_can_update_project_name_and_team(): void
+    {
+        $agency = $this->makeAgency('agency-update');
+        $admin  = $this->makeUser($agency, 'admin');
+        $member = $this->makeUser($agency, 'member');
+        $client = $this->makeClient($agency);
+
+        $create = $this->actingAs($admin)
+            ->postJson('/api/v1/projects', $this->projectPayload($client));
+        $create->assertStatus(201);
+        $projectId = $create->json('data.id');
+
+        $response = $this->actingAs($admin)->putJson("/api/v1/projects/{$projectId}", [
+            'name'            => 'Portal Relabel',
+            'type'            => 'Web Development',
+            'status'          => 'active',
+            'priority'        => 'high',
+            'budget'          => 9000,
+            'estimated_hours' => 80,
+            'start_date'      => '2026-07-01',
+            'end_date'        => '2026-10-15',
+            'team_member_ids' => [$admin->id, $member->id],
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.name', 'Portal Relabel')
+            ->assertJsonPath('data.status', 'active')
+            ->assertJsonPath('data.priority', 'high');
+
+        $this->assertDatabaseHas('projects', [
+            'id'   => $projectId,
+            'name' => 'Portal Relabel',
+            'type' => 'Web Development',
+        ]);
+
+        $this->assertDatabaseHas('project_team_members', [
+            'project_id' => $projectId,
+            'user_id'    => $member->id,
+        ]);
+    }
+
+    public function test_only_admin_can_delete_project(): void
+    {
+        $agency = $this->makeAgency('agency-delete');
+        $admin  = $this->makeUser($agency, 'admin');
+        $pm     = $this->makeUser($agency, 'pm');
+        $client = $this->makeClient($agency);
+
+        $create = $this->actingAs($admin)
+            ->postJson('/api/v1/projects', $this->projectPayload($client));
+        $create->assertStatus(201);
+        $projectId = $create->json('data.id');
+
+        $this->actingAs($pm)
+            ->deleteJson("/api/v1/projects/{$projectId}")
+            ->assertStatus(403);
+
+        $this->assertDatabaseHas('projects', [
+            'id'         => $projectId,
+            'deleted_at' => null,
+        ]);
+
+        $this->actingAs($admin)
+            ->deleteJson("/api/v1/projects/{$projectId}")
+            ->assertOk()
+            ->assertJsonPath('success', true);
+
+        $this->assertSoftDeleted('projects', ['id' => $projectId]);
     }
 }

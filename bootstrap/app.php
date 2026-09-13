@@ -1,6 +1,9 @@
 <?php
 
+use App\Http\Middleware\EnsureAccessNotRevoked;
 use App\Http\Middleware\EnsureAgencyScope;
+use App\Http\Middleware\EnsurePermission;
+use App\Http\Middleware\EnsureProjectVisible;
 use App\Http\Middleware\EnsureRole;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -16,8 +19,11 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
-            'role'         => EnsureRole::class,
-            'agency.scope' => EnsureAgencyScope::class,
+            'role'           => EnsureRole::class,
+            'permission'     => EnsurePermission::class,
+            'project.visible'=> EnsureProjectVisible::class,
+            'agency.scope'   => EnsureAgencyScope::class,
+            'access.active'  => EnsureAccessNotRevoked::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

@@ -12,7 +12,9 @@ use App\Http\Traits\ApiResponse;
 use App\Models\Project;
 use App\Models\ProjectEvent;
 use App\Models\Task;
+use App\Models\TimeLog;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -20,16 +22,27 @@ class TaskController extends Controller
 {
     use ApiResponse;
 
-    // GET /api/v1/tasks[?status=&mine_only=1] — agency-wide, across all projects (the "My Tasks" nav page)
+    // GET /api/v1/tasks[?status=&mine_only=1&assignee_id=&project_id=]
+    // Agency-wide task list for the Tasks nav page. Members always see own tasks only.
     public function mine(Request $request): JsonResponse
     {
         $user = $request->user();
+        $canViewTeam = in_array($user->role, ['admin', 'pm'], true);
 
         $query = Task::with(['assignee:id,name,role', 'project:id,name,color'])
             ->withCount('timeLogs');
 
-        if ($request->boolean('mine_only', true)) {
+        // Members (and anyone without team access) are always scoped to themselves.
+        // Admin/PM may pass mine_only=0 to browse the full agency task list.
+        $mineOnly = !$canViewTeam || $request->boolean('mine_only', true);
+        if ($mineOnly) {
             $query->where('assignee_id', $user->id);
+        } elseif ($request->filled('assignee_id')) {
+            $query->where('assignee_id', (int) $request->assignee_id);
+        }
+
+        if ($request->filled('project_id')) {
+            $query->where('project_id', (int) $request->project_id);
         }
         if ($request->filled('status')) {
             $query->where('status', $request->status);
@@ -38,6 +51,126 @@ class TaskController extends Controller
         $tasks = $query->orderByRaw('deadline IS NULL, deadline')->orderByDesc('created_at')->get();
 
         return $this->success(TaskResource::collection($tasks));
+    }
+
+    // GET /api/v1/tasks/productivity[?from=YYYY-MM-DD&to=YYYY-MM-DD]
+    // Project-wise hours + active task counts for the Tasks productivity panel.
+    public function productivity(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $agencyId = $user->agency_id;
+        $canViewTeam = in_array($user->role, ['admin', 'pm'], true);
+
+        $from = $request->query('from');
+        $to = $request->query('to');
+
+        if ($from && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)) {
+            return $this->error('Invalid from date. Use YYYY-MM-DD.', [], 422);
+        }
+        if ($to && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
+            return $this->error('Invalid to date. Use YYYY-MM-DD.', [], 422);
+        }
+
+        $fromDate = $from
+            ? Carbon::createFromFormat('Y-m-d', $from)->startOfDay()
+            : now()->startOfWeek();
+        $toDate = $to
+            ? Carbon::createFromFormat('Y-m-d', $to)->endOfDay()
+            : now()->endOfWeek();
+
+        if ($fromDate->gt($toDate)) {
+            return $this->error('from must be on or before to.', [], 422);
+        }
+
+        $logsQuery = TimeLog::withoutGlobalScope('agency')
+            ->where('agency_id', $agencyId)
+            ->whereDate('logged_date', '>=', $fromDate->toDateString())
+            ->whereDate('logged_date', '<=', $toDate->toDateString())
+            ->whereHas('task', fn ($q) => $q->whereNull('deleted_at'));
+
+        if (!$canViewTeam) {
+            $logsQuery->where('user_id', $user->id);
+        }
+
+        $logs = $logsQuery
+            ->with(['task:id,project_id,deleted_at', 'task.project:id,name,color'])
+            ->get();
+
+        // Fill every day in range (including zero-hour days) for the bar chart
+        $hoursByDate = $logs->groupBy(fn ($log) => Carbon::parse($log->logged_date)->toDateString())
+            ->map(fn ($dayLogs) => (float) $dayLogs->sum('hours'));
+
+        $byDay = [];
+        $cursor = $fromDate->copy()->startOfDay();
+        $endDay = $toDate->copy()->startOfDay();
+        while ($cursor->lte($endDay)) {
+            $key = $cursor->toDateString();
+            $byDay[] = [
+                'date'  => $key,
+                'hours' => round((float) ($hoursByDate[$key] ?? 0), 2),
+            ];
+            $cursor->addDay();
+        }
+
+        $hoursByProject = $logs
+            ->filter(fn ($log) => $log->task?->project_id)
+            ->groupBy(fn ($log) => $log->task->project_id);
+
+        $activeTasksQuery = Task::withoutGlobalScope('agency')
+            ->where('agency_id', $agencyId)
+            ->whereIn('status', ['todo', 'in_progress', 'in_review'])
+            ->whereNull('deleted_at');
+
+        if (!$canViewTeam) {
+            $activeTasksQuery->where('assignee_id', $user->id);
+        }
+
+        $activeByProject = $activeTasksQuery
+            ->selectRaw('project_id, COUNT(*) as cnt')
+            ->groupBy('project_id')
+            ->pluck('cnt', 'project_id');
+
+        $projectIds = $hoursByProject->keys()
+            ->merge($activeByProject->keys())
+            ->unique()
+            ->filter()
+            ->values();
+
+        $projects = Project::withoutGlobalScope('agency')
+            ->where('agency_id', $agencyId)
+            ->whereIn('id', $projectIds)
+            ->get(['id', 'name', 'color'])
+            ->keyBy('id');
+
+        $byProject = $projectIds->map(function ($projectId) use ($hoursByProject, $activeByProject, $projects) {
+            $project = $projects->get($projectId);
+            $hours = (float) ($hoursByProject->get($projectId)?->sum('hours') ?? 0);
+
+            return [
+                'project_id'   => (int) $projectId,
+                'name'         => $project?->name ?? 'Unknown project',
+                'color'        => $project?->color,
+                'hours'        => round($hours, 2),
+                'active_tasks' => (int) ($activeByProject[$projectId] ?? 0),
+            ];
+        })
+            ->sortByDesc('hours')
+            ->values()
+            ->all();
+
+        $totalHours = round((float) $logs->sum('hours'), 2);
+        $totalActive = (int) $activeByProject->sum();
+
+        return $this->success([
+            'from'       => $fromDate->toDateString(),
+            'to'         => $toDate->toDateString(),
+            'by_day'     => $byDay,
+            'by_project' => $byProject,
+            'totals'     => [
+                'hours'        => $totalHours,
+                'active_tasks' => $totalActive,
+            ],
+        ]);
     }
 
     // GET /api/v1/projects/{project}/tasks[?status=&assignee_id=&priority=&group_by=status]
@@ -100,6 +233,10 @@ class TaskController extends Controller
             'milestone_id'    => $task->milestone_id,
             'created_by'      => $user->id,
         ]);
+
+        if ($task->assignee_id) {
+            $project->teamMembers()->syncWithoutDetaching([(int) $task->assignee_id]);
+        }
 
         $task->load('assignee:id,name,role');
 
@@ -229,6 +366,7 @@ class TaskController extends Controller
         }
 
         $task->update(['assignee_id' => $assignee->id]);
+        $project->teamMembers()->syncWithoutDetaching([$assignee->id]);
         $task->load('assignee:id,name,role');
 
         ProjectEvent::log($user->agency_id, $project->id, 'task_assigned', [

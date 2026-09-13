@@ -18,6 +18,13 @@ class InviteUserRequest extends FormRequest
             'name'             => ['required', 'string', 'min:2', 'max:100'],
             'email'            => ['required', 'email', 'unique:users,email'],
             'role'             => ['required', Rule::in(['pm', 'member'])],
+            'custom_role_id'   => [
+                'sometimes', 'nullable',
+                Rule::exists('custom_roles', 'id')->where(function ($q) {
+                    $q->where('agency_id', $this->user()->agency_id)
+                        ->where('base_role', $this->input('role'));
+                }),
+            ],
             'department'       => ['required', 'string', 'max:100'],
             'employment_type'  => ['required', Rule::in(['full_time', 'part_time', 'contractor'])],
             'phone'            => ['nullable', 'string', 'max:40'],

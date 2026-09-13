@@ -23,6 +23,15 @@ class UpdateTeamMemberRequest extends FormRequest
             'role'             => $isAdmin
                 ? ['prohibited']
                 : ['sometimes', Rule::in(['pm', 'member'])],
+            'custom_role_id'   => $isAdmin
+                ? ['prohibited']
+                : [
+                    'sometimes', 'nullable',
+                    Rule::exists('custom_roles', 'id')->where(function ($q) use ($user) {
+                        $q->where('agency_id', $this->user()->agency_id)
+                            ->where('base_role', $this->input('role', $user?->role));
+                    }),
+                ],
             'department'       => ['sometimes', 'nullable', 'string', 'max:100'],
             'employment_type'  => ['sometimes', 'nullable', Rule::in(['full_time', 'part_time', 'contractor'])],
             'phone'            => ['sometimes', 'nullable', 'string', 'max:40'],
